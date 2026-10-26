@@ -23,7 +23,7 @@
   </div></header><div class="yellow-strip"></div>
   <main class="wrap main"><div class="section-head"><div><div class="kicker" id="edizione">Prossima schedina</div><h2 id="titolo">Le 8 partite da analizzare</h2></div><div class="section-hint">Tocca una partita per aprire le statistiche ↗</div></div><div class="grid" id="partite"></div>
     
-    <div class="notice" id="notice">ℹ️ Le statistiche vengono inserite e verificate dall'organizzatore. Se un dato non compare, non è ancora disponibile. Nessuna analisi garantisce il risultato di una partita.</div>
+    <div class="notice" id="notice">ℹ️ Apri una partita per caricare automaticamente le statistiche delle ultime 5 gare da API-Football. Se il dato non è disponibile, verrà indicato. Nessuna statistica garantisce il risultato.</div>
   </main>
   <footer class="footer"><strong>AL MOMENTO BAR</strong> · Il calcio si vive, la schedina si studia!<br>Pagina informativa per i partecipanti al torneo.</footer>
   <div class="overlay" id="overlay" aria-hidden="true"><section class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div class="dialog-head"><button class="close" id="close" aria-label="Chiudi scheda">×</button><small id="dialog-sub">PARTITA</small><h3 id="dialog-title">Squadra casa – Squadra ospite</h3><p id="dialog-date"></p></div><div class="dialog-body" id="dialog-body"></div></section></div>
@@ -37,6 +37,7 @@
     const displayName=(v, fallback)=>shown(v,fallback);
     const pct=v=>String(v??'').trim()?safe(v).replace(/%/g,'')+'%':'—';
     const matches=Array.isArray(cfg.partite)?cfg.partite.slice(0,8):[];
+    let activeMatch=null; const loadPromises=new Map();
     $('edizione').textContent=cfg.edizione||'Prossima schedina';
     $('titolo').textContent=cfg.titolo||'Le 8 partite della schedina';
     if(cfg.aggiornato) $('notice').textContent='📅 Dati aggiornati: '+cfg.aggiornato+'. Le statistiche sono indicative, e nessuna analisi garantisce un risultato.';
@@ -46,8 +47,40 @@
     const row=(label,value)=>`<div class="stat-row"><span>${label}</span><strong>${value}</strong></div>`;
     function statPanel(name,stats,title){const s=stats||{};return `<div class="stat-panel"><h4>${safe(title)} · ${shown(name,title==='CASA'?'Squadra di casa':'Squadra ospite')}</h4>${row('Ultime 5 (V / P / S)',formPills(s.forma))}${row('Media gol fatti',shown(s.fatti))}${row('Media gol subiti',shown(s.subiti))}${row('Partite GOL',pct(s.gol))}${row('Partite Over 2,5',pct(s.over))}${row(title==='CASA'?'Rendimento in casa':'Rendimento in trasferta',shown(s.rendimento))}</div>`}
     function detail(label,value){return `<div class="detail-card"><h4>${label}</h4><p>${shown(value,'Dato non ancora disponibile.')}</p></div>`}
-    function open(i){const m=matches[i]||{};$('dialog-sub').textContent='ANALISI · PARTITA '+(i+1)+(m.torneo?' · '+m.torneo:'');$('dialog-title').textContent=(m.casa||'Squadra di casa')+'  VS  '+(m.trasferta||'Squadra ospite');$('dialog-date').textContent=m.quando||'Data e orario da definire';$('dialog-body').innerHTML=`<div class="stat-cols">${statPanel(m.casa,m.casaStats,'CASA')}${statPanel(m.trasferta,m.trasfertaStats,'TRASFERTA')}</div>${detail('🤝 Scontri diretti',m.precedenti)}${detail('🔎 Analisi statistica',m.analisi)}<p class="tip">V = vittoria · P = pareggio · S = sconfitta. Le percentuali e le medie sono riferite ai dati inseriti per questa schedina. Statistiche a scopo informativo, non garanzie di esito.</p>`;$('overlay').classList.add('open');$('overlay').setAttribute('aria-hidden','false');document.body.style.overflow='hidden';$('close').focus()}
-    function close(){$('overlay').classList.remove('open');$('overlay').setAttribute('aria-hidden','true');document.body.style.overflow=''}
+    function renderDetail(i, info) {
+      const m=matches[i]||{};
+      $('dialog-body').innerHTML=`<div class="stat-cols">${statPanel(m.casa,m.casaStats,'CASA')}${statPanel(m.trasferta,m.trasfertaStats,'TRASFERTA')}</div>${detail('🤝 Scontri diretti',m.precedenti)}${detail('🔎 Analisi statistica',m.analisi)}<p class="tip">${safe(info||'I valori saranno caricati da API-Football.')}<br>V = vittoria · P = pareggio · S = sconfitta. Medie e percentuali calcolate sulle ultime cinque partite concluse disponibili per ciascuna squadra. Informazioni non predittive.</p>`;
+    }
+    async function fetchStats(i) {
+      if(loadPromises.has(i)) return loadPromises.get(i);
+      const promise=(async()=>{
+        const res=await fetch('/.netlify/functions/statistiche?partita='+i,{headers:{'Accept':'application/json'}});
+        const data=await res.json();
+        if(!res.ok) throw new Error(data.error||'Impossibile caricare le statistiche.');
+        Object.assign(matches[i], {casaStats:data.casaStats,trasfertaStats:data.trasfertaStats,precedenti:data.precedenti,analisi:data.analisi,aggiornato:data.aggiornato});
+        $('partite').innerHTML=Array.from({length:8},(_,j)=>card(matches[j]||{},j)).join('');
+        return data;
+      })();
+      loadPromises.set(i,promise);
+      try{return await promise}catch(e){loadPromises.delete(i);throw e}
+    }
+    async function loadIntoDialog(i){
+      try{
+        const data=await fetchStats(i);
+        if(activeMatch===i)renderDetail(i,'✅ Statistiche da API-Football, aggiornate '+new Date(data.aggiornato).toLocaleString('it-IT',{timeZone:'Europe/Rome'})+'.');
+      }catch(e){if(activeMatch===i)renderDetail(i,'⚠️ '+String(e.message||'Statistiche al momento non disponibili.'))}
+    }
+    function open(i){
+      activeMatch=i; const m=matches[i]||{};
+      $('dialog-sub').textContent='ANALISI · PARTITA '+(i+1)+(m.torneo?' · '+m.torneo:'');
+      $('dialog-title').textContent=(m.casa||'Squadra di casa')+'  VS  '+(m.trasferta||'Squadra ospite');
+      $('dialog-date').textContent=m.quando||'Data e orario da definire';
+      renderDetail(i,m.aggiornato?'✅ Dati già caricati.':'⏳ Caricamento statistiche automatiche…');
+      $('overlay').classList.add('open');$('overlay').setAttribute('aria-hidden','false');
+      document.body.style.overflow='hidden';$('close').focus();
+      if(!m.aggiornato)loadIntoDialog(i);
+    }
+    function close(){activeMatch=null;$('overlay').classList.remove('open');$('overlay').setAttribute('aria-hidden','true');document.body.style.overflow=''}
     $('partite').addEventListener('click',e=>{const b=e.target.closest('[data-match]');if(b)open(+b.dataset.match)});$('close').addEventListener('click',close);$('overlay').addEventListener('click',e=>{if(e.target===$('overlay'))close()});document.addEventListener('keydown',e=>{if(e.key==='Escape')close()});
   })();
   </script>
